@@ -43,22 +43,42 @@ APT_GET=(apt-get -y -o DPkg::Lock::Timeout=300
 
 # ── Look & feel ──────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
-  C_B=$'\e[1m' C_D=$'\e[2m' C_R=$'\e[0m' C_RED=$'\e[31m' C_GRN=$'\e[32m' C_YEL=$'\e[33m' C_CYN=$'\e[36m'
+  C_B=$'\e[1m' C_D=$'\e[2m' C_R=$'\e[0m' C_RED=$'\e[31m' C_GRN=$'\e[32m' C_YEL=$'\e[33m'
+  C_CYN=$'\e[36m' C_MAG=$'\e[35m'
 else
-  C_B="" C_D="" C_R="" C_RED="" C_GRN="" C_YEL="" C_CYN=""
+  C_B="" C_D="" C_R="" C_RED="" C_GRN="" C_YEL="" C_CYN="" C_MAG=""
 fi
 if [[ $(locale charmap 2>/dev/null) == UTF-8 ]]; then
-  G_FULL="█" G_EMPTY="░" G_LINE="─" G_OK="✔" G_BAD="✖" G_SKIP="–" G_ARROW="›" G_DOT="·"
+  G_FULL="█" G_EMPTY="░" G_LINE="─" G_OK="✔" G_BAD="✖" G_SKIP="–" G_ARROW="›" G_DOT="·" G_BUL="•"
 else
-  G_FULL="#" G_EMPTY="." G_LINE="-" G_OK="+" G_BAD="x" G_SKIP="-" G_ARROW=">" G_DOT="|"
+  G_FULL="#" G_EMPTY="." G_LINE="-" G_OK="+" G_BAD="x" G_SKIP="-" G_ARROW=">" G_DOT="|" G_BUL="-"
 fi
+
+TITLE="Phrawg Game Server Setup Wizard"
+SCREEN_W=64   # width of the separator lines
+ART_PAD=17    # pushes the frog to the middle of the screen
+mapfile -t WIZARD_ART <<'ART'
+              /\
+             /  \       *
+            / *  \    .
+           /______\
+       .--(o)----(o)--.
+      (       __       )~*
+       \     '--'     /  |
+        '-.________.-'   |
+         _/ |    | \_    |
+        (___|____|___)   |
+ART
 
 info() { printf '  %s%s%s %s\n' "$C_CYN" "$G_ARROW" "$C_R" "$*"; }
 ok()   { printf '  %s%s%s %s\n' "$C_GRN" "$G_OK" "$C_R" "$*"; }
 warn() { printf '  %s! %s%s\n' "$C_YEL" "$*" "$C_R"; }
 err()  { printf '  %s%s %s%s\n' "$C_RED" "$G_BAD" "$*" "$C_R" >&2; }
 note() { printf '  %s%s%s\n' "$C_D" "$*" "$C_R"; }
-rule() { local l; printf -v l '%*s' 66 ''; printf '%s%s%s\n' "$C_D" "${l// /$G_LINE}" "$C_R"; }
+rule() { local l; printf -v l '%*s' "$SCREEN_W" ''; printf '%s%s%s\n' "$C_D" "${l// /$G_LINE}" "$C_R"; }
+center() { printf '%*s%s%s%s\n' $(( (SCREEN_W - ${#1}) / 2 )) '' "${2-}" "$1" "$C_R"; }  # center TEXT [COLOR]
+clear_screen() { [[ -t 1 ]] && printf '\e[H\e[2J'; return 0; }
+pause() { [[ -t 0 ]] || return 0; echo; read -rsp "  ${C_D}Press Enter to continue...${C_R}" _ || true; echo; }
 
 progress_bar() { # progress_bar STEPS_DONE
   local n=$1 width=32 filled bar_done bar_todo
@@ -68,12 +88,28 @@ progress_bar() { # progress_bar STEPS_DONE
   printf '  %s%s%s%s%s %3d%%' "$C_GRN" "$bar_done" "$C_D" "$bar_todo" "$C_R" $(( n * 100 / TOTAL_STEPS ))
 }
 
-stage_header() { # stage_header INDEX TITLE
-  local i=$1
-  echo; rule
-  progress_bar "$i"
-  printf '   Step %d of %d %s %s%d left%s\n' $(( i + 1 )) "$TOTAL_STEPS" "$G_DOT" "$C_B" $(( TOTAL_STEPS - i )) "$C_R"
-  printf '  %s%s%s\n' "$C_B" "$2" "$C_R"
+# Every screen: wizard, title, progress — then the caller adds its own section
+draw_screen() { # draw_screen STEPS_DONE "text next to the bar"
+  local i c
+  clear_screen
+  echo
+  for i in "${!WIZARD_ART[@]}"; do
+    (( i < 4 )) && c=$C_MAG || c=$C_GRN      # purple hat, green frog
+    printf '%*s%s%s%s\n' "$ART_PAD" '' "$c" "${WIZARD_ART[i]}" "$C_R"
+  done
+  echo
+  center "$TITLE" "$C_B"
+  rule
+  progress_bar "$1"; printf '   %s\n' "$2"
+  rule
+}
+
+stage_screen() { # stage_screen INDEX — header plus this stage's title and description
+  local i=$1 line
+  stage_text "$i"
+  draw_screen "$i" "Step $(( i + 1 )) of $TOTAL_STEPS $G_DOT $C_B$(( TOTAL_STEPS - i )) left$C_R"
+  printf '  %sStage %d %s %s%s\n\n' "$C_B" "$i" "$G_DOT" "${TITLES[i]}" "$C_R"
+  for line in "${STAGE_DESC[@]}"; do printf '  %s\n' "$line"; done
   rule
 }
 
@@ -110,10 +146,11 @@ ask_yn() { # ask_yn "Question" [Y|N]
   done
 }
 
-confirm_stage() { # 0 = run, 1 = skip (q quits)
+confirm_stage() { # confirm_stage "Question?" — 0 = run, 1 = skip (q quits)
   local ans
+  printf '  %s%s%s\n' "$C_B" "$1" "$C_R"
   while true; do
-    read -rp "  Run this stage? [Y]es / [s]kip / [q]uit: " ans || quit_now 1
+    read -rp "  [Y]es, [s]kip or [q]uit: " ans || quit_now 1
     case ${ans,,} in
       ""|y|yes)     return 0 ;;
       s|skip|n|no)  return 1 ;;
@@ -1140,49 +1177,120 @@ stage_service_aliases() { # Stage 10 · aliases for the service
 #  Flow
 # ═════════════════════════════════════════════════════════════════════════════
 
+stage_text() { # stage_text INDEX — sets STAGE_DESC (lines) and STAGE_Q (the question)
+  local b="  $G_BUL"
+  case $1 in
+    0) STAGE_Q="Update the system and install the tools now?"
+       STAGE_DESC=("Brings the system up to date and installs everything the"
+                   "later steps need:"
+                   "$b Updates every package (keeps your existing configs)"
+                   "$b Installs SteamCMD, playit.gg, ufw and git"
+                   "$b Plus small helpers: curl, jq, unzip, nano and sudo"
+                   ""
+                   "On a fresh VM this can take a few minutes.") ;;
+    1) STAGE_Q="Set up the firewall now?"
+       STAGE_DESC=("Turns on the firewall so nothing can reach this VM unless"
+                   "you allow it:"
+                   "$b Blocks all incoming connections"
+                   "$b Allows all outgoing ones (updates, Steam, playit.gg)"
+                   "$b Allows SSH only from your local network"
+                   ""
+                   "You confirm the network and SSH port first, and it warns"
+                   "you if the new rules would lock you out.") ;;
+    2) STAGE_Q="Go through the hardening options now?"
+       STAGE_DESC=("Optional security tweaks, each with its own yes/no:"
+                   "$b Block root and the server user from SSH logins"
+                   "$b Key-only SSH login (only if you have a key set up)"
+                   "$b Install security updates automatically every day"
+                   "$b Kernel network hardening and private home folders"
+                   "$b Sandbox the game server so a hack can't spread") ;;
+    3) STAGE_Q="Create a dedicated server user?"
+       STAGE_DESC=("Creates a separate account that owns the server files and"
+                   "runs the server, so a problem with the game can't reach"
+                   "your own account."
+                   ""
+                   "$b No password; get a shell as it with: sudo -iu <name>"
+                   "$b Skip this to run everything as $ADMIN_USER") ;;
+    4) STAGE_Q="Set up playit.gg now?"
+       STAGE_DESC=("Lets players reach your server without port forwarding:"
+                   "$b Starts the playit.gg agent as a background service"
+                   "$b Shows a link: open it, log in and approve this VM"
+                   ""
+                   "Afterwards, add a tunnel for your game's port on the"
+                   "playit.gg website.") ;;
+    5) STAGE_Q="How do you want to install the game server?"
+       STAGE_DESC=("Choose how the game server gets onto this VM (it's"
+                   "installed for $GS_USER). The other options are skipped."
+                   ""
+                   "  1) SteamCMD  - games with a dedicated server on Steam"
+                   "  2) GitHub    - clone a repo or grab a release download"
+                   "  3) Myself    - the script just prepares the folder") ;;
+    6) STAGE_Q="Run the SteamCMD first-run steps?"
+       STAGE_DESC=("Finishes the Steam side, asking before each part:"
+                   "  a) Let SteamCMD update itself"
+                   "  b) Log in with a Steam account, if the game needs one"
+                   "  c) Start the server once so it writes its config files,"
+                   "     then stop it again automatically") ;;
+    7) STAGE_Q="Install alias-motd?"
+       STAGE_DESC=("Installs alias-motd for $(alias_users_text)."
+                   "Every time you log in it prints a table of your aliases,"
+                   "so you never have to remember them.") ;;
+    8) STAGE_Q="Add the alias helpers?"
+       STAGE_DESC=("Adds two helpers for $(alias_users_text):"
+                   "$b edit-alias     opens ~/.bash_aliases in nano"
+                   "$b update-alias   reloads it without logging out") ;;
+    9) STAGE_Q="Create the game server service?"
+       STAGE_DESC=("Creates $SERVICE_NAME so the game server:"
+                   "$b Runs in the background as $GS_USER"
+                   "$b Restarts by itself if it crashes"
+                   "$b Can start automatically when the VM boots"
+                   ""
+                   "You'll be asked for the server folder and the command"
+                   "that starts it.") ;;
+    10) STAGE_Q="Add the service aliases?"
+        STAGE_DESC=("Adds short commands for running the server:"
+                    "$b gameserver-start / stop / restart / status / logs")
+        [[ $INSTALL_METHOD == steam ]] && STAGE_DESC+=("$b gameserver-steamupdate to update through SteamCMD")
+        STAGE_DESC+=("$b edit-service / update-service (only for $ADMIN_USER)")
+        [[ $GS_USER != "$ADMIN_USER" ]] && STAGE_DESC+=("" "$GS_USER can get start/stop rights too - you'll be asked.") ;;
+  esac
+}
+
 exec_stage() { # exec_stage INDEX FUNCTION
+  echo
   if "$2"; then
     RESULT[$1]=done
+    echo; ok "${C_B}Stage $1 done.${C_R}"
+    pause
   else
     RESULT[$1]=failed
-    err "Stage $1 didn't finish."
+    echo; err "Stage $1 didn't finish."
     ask_yn "Continue with the next stage anyway?" Y || quit_now 1
   fi
 }
 
-run_stage() { # run_stage INDEX DESCRIPTION FUNCTION [GUARD_FUNCTION "why it's skipped"]
-  local i=$1 desc=$2 fn=$3 guard=${4-} reason=${5-}
-  stage_header "$i" "Stage $i ${G_DOT} ${TITLES[i]}"
-  if [[ -n $guard ]] && ! "$guard"; then
-    info "Skipped automatically — $reason."
-    RESULT[i]="n/a"
-    return
-  fi
-  printf '  %s\n\n' "$desc"
-  if confirm_stage; then
+run_stage() { # run_stage INDEX FUNCTION [GUARD] — if GUARD fails the stage doesn't apply and is skipped silently
+  local i=$1 fn=$2 guard=${3-}
+  if [[ -n $guard ]] && ! "$guard"; then RESULT[i]="n/a"; return; fi
+  stage_screen "$i"
+  if confirm_stage "$STAGE_Q"; then
     exec_stage "$i" "$fn"
   else
     RESULT[i]=skipped
-    info "Skipped."
   fi
 }
 
-stage_install_menu() {
+stage_install_menu() { # Stage 5 — pick one of 5.1 / 5.2 / 5.3
   local choice
-  stage_header 5 "Stage 5 ${G_DOT} ${TITLES[5]}"
-  echo "  Pick one (the other options are skipped):"
-  echo "    1) Stage 5.1 — Install via SteamCMD"
-  echo "    2) Stage 5.2 — Install from GitHub"
-  echo "    3) Stage 5.3 — I'll install it myself"
-  echo "    s) Skip    q) Quit"
-  echo
+  stage_screen 5
+  printf '  %s%s%s\n' "$C_B" "$STAGE_Q" "$C_R"
   while true; do
-    read -rp "  Choice: " choice || quit_now 1
+    read -rp "  [1], [2], [3], [s]kip or [q]uit: " choice || quit_now 1
     case ${choice,,} in
       1) RESULT_NOTE[5]="SteamCMD";          exec_stage 5 stage_install_steam;  return ;;
       2) RESULT_NOTE[5]="GitHub";            exec_stage 5 stage_install_github; return ;;
       3) RESULT_NOTE[5]="installing myself"; exec_stage 5 stage_install_manual; return ;;
-      s|skip) RESULT[5]=skipped; info "Skipped."; return ;;
+      s|skip) RESULT[5]=skipped; return ;;
       q|quit) quit_now 0 ;;
     esac
   done
@@ -1190,13 +1298,11 @@ stage_install_menu() {
 
 needs_steam() { [[ $INSTALL_METHOD == steam ]]; }
 
-summary() {
+summary() { # summary "Headline"
   local i status icon processed=0
   for i in $(seq 0 $(( TOTAL_STEPS - 1 ))); do [[ -n ${RESULT[i]:-} ]] && processed=$(( processed + 1 )); done
-  echo; rule
-  progress_bar "$processed"
-  printf '   %d of %d steps processed\n' "$processed" "$TOTAL_STEPS"
-  rule
+  draw_screen "$processed" "$processed of $TOTAL_STEPS steps"
+  printf '  %s%s%s\n\n' "$C_B" "$1" "$C_R"
   for i in $(seq 0 $(( TOTAL_STEPS - 1 ))); do
     status=${RESULT[i]:-not reached}
     case $status in
@@ -1204,14 +1310,14 @@ summary() {
       failed) icon="$C_RED$G_BAD$C_R" ;;
       *)      icon="$C_D$G_SKIP$C_R" ;;
     esac
-    printf '   %s  Stage %-2d %-20s %s%s\n' "$icon" "$i" "${TITLES[i]}" "$status" "${RESULT_NOTE[i]:+ — ${RESULT_NOTE[i]}}"
+    printf '  %s  Stage %-2d %-20s %s%s\n' "$icon" "$i" "${TITLES[i]}" "$status" "${RESULT_NOTE[i]:+ — ${RESULT_NOTE[i]}}"
   done
-  echo
-  printf '   %-14s %s\n' "Server user:" "$GS_USER"
-  [[ -n $GS_DIR ]] && printf '   %-14s %s\n' "Server files:" "$GS_DIR"
-  [[ -f $SERVICE_FILE ]] && printf '   %-14s %s (%s, %s on boot)\n' "Service:" "$SERVICE_NAME" \
+  rule
+  printf '  %-14s %s%s\n' "Server user:" "$GS_USER" "$([[ $GS_USER == "$ADMIN_USER" ]] && echo " (no separate server user)")"
+  [[ -n $GS_DIR ]] && printf '  %-14s %s\n' "Server files:" "$GS_DIR"
+  [[ -f $SERVICE_FILE ]] && printf '  %-14s %s (%s, %s on boot)\n' "Service:" "$SERVICE_NAME" \
     "$(systemctl is-active "$SERVICE_NAME" 2>/dev/null)" "$(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null)"
-  command -v playit >/dev/null 2>&1 && printf '   %-14s %s\n' "playit:" "$(systemctl is-active playit 2>/dev/null)"
+  command -v playit >/dev/null 2>&1 && printf '  %-14s %s\n' "playit:" "$(systemctl is-active playit 2>/dev/null)"
   local h=()
   [[ $H_ROOT_SSH == yes ]]      && h+=("no root SSH")
   [[ $H_DENY_GS_SSH == yes ]]   && h+=("no server-user SSH")
@@ -1220,19 +1326,19 @@ summary() {
   [[ $H_SYSCTL == yes ]]        && h+=("sysctl")
   [[ $H_PRIVATE_HOMES == yes ]] && h+=("private homes")
   [[ $H_SANDBOX == yes ]]       && h+=("service sandbox")
-  (( ${#h[@]} )) && printf '   %-14s %s\n' "Hardening:" "$(printf '%s, ' "${h[@]}" | sed 's/, $//')"
-  echo
-  info "Log out and back in (or run: source ~/.bash_aliases) to load new aliases."
+  (( ${#h[@]} )) && printf '  %-14s %s\n' "Hardening:" "$(printf '%s, ' "${h[@]}" | sed 's/, $//')"
+  rule
+  info "To load the new aliases now: source ~/.bash_aliases"
   [[ -f /var/run/reboot-required ]] && warn "The system upgrade asks for a reboot: sudo reboot"
-  note "Answers are saved in $CONF_FILE — re-run this script any time to redo a stage."
+  note "Answers are saved in $CONF_FILE."
+  note "Re-run the script any time to redo a stage."
   echo
 }
 
 quit_now() {
   local code=${1:-0}
   trap - INT
-  echo; warn "Stopping here."
-  summary
+  summary "Stopped early - re-run any time to pick up where you left off."
   exit "$code"
 }
 
@@ -1260,12 +1366,20 @@ preflight() {
   if [[ -z $GS_USER ]] || ! id "$GS_USER" >/dev/null 2>&1; then GS_USER=$ADMIN_USER; fi
 }
 
-banner() {
+intro_screen() {
+  local ans gs=$GS_USER
+  [[ $GS_USER == "$ADMIN_USER" ]] && gs="none yet (Stage 3 can create one)"
+  draw_screen 0 "$TOTAL_STEPS steps"
+  printf '  %sWelcome!%s This wizard turns this VM into a game server.\n\n' "$C_B" "$C_R"
+  printf '  %-14s %s\n' "System:" "$OS_NAME" "Running as:" "$ADMIN_USER" "Server user:" "$gs"
+  [[ -s $CONF_FILE ]] && printf '  %-14s %s\n' "Saved answers:" "$CONF_FILE (used as defaults)"
   echo
-  printf '  %sGame server VM setup%s\n' "$C_B" "$C_R"
-  printf '  %s%s  %s  you: %s  %s  server user: %s%s\n' "$C_D" "$OS_NAME" "$G_DOT" "$ADMIN_USER" "$G_DOT" "$GS_USER" "$C_R"
-  [[ -s $CONF_FILE ]] && note "Using saved answers from $CONF_FILE"
-  echo "  You'll be asked before every stage — answer s to skip one, q to quit."
+  echo "  Each step explains what it will do and asks first. Nothing"
+  echo "  changes until you say yes, and you can skip any step."
+  rule
+  read -rp "  Press Enter to start, or q to quit: " ans || exit 1
+  [[ ${ans,,} == q* ]] && { echo; exit 0; }
+  return 0
 }
 
 main() {
@@ -1279,22 +1393,21 @@ main() {
 
   trap on_int INT
   preflight
-  banner
+  intro_screen
 
-  run_stage 0  "apt update + upgrade, then install SteamCMD, playit.gg, ufw and git (plus curl, jq, unzip, nano, sudo)." stage_installs
-  run_stage 1  "Deny incoming, allow outgoing, and only allow SSH from your local network." stage_firewall
-  run_stage 2  "Security hardening — you'll be asked about each item separately." stage_hardening
-  run_stage 3  "Create a dedicated user (no password) that owns and runs the server. Skip to use $ADMIN_USER." stage_server_user
-  run_stage 4  "Turn on the playit.gg service and link this VM to your playit account." stage_playit
+  run_stage 0  stage_installs
+  run_stage 1  stage_firewall
+  run_stage 2  stage_hardening
+  run_stage 3  stage_server_user
+  run_stage 4  stage_playit
   stage_install_menu
-  run_stage 6  "Update SteamCMD, log in with a Steam account if the game needs one, and run the server once to create its configs." \
-               stage_steam_firstrun needs_steam "only applies when the server was installed with SteamCMD (Stage 5.1)"
-  run_stage 7  "Install alias-motd (shows your aliases on login) for $(alias_users_text)." stage_alias_motd
-  run_stage 8  "Add edit-alias and update-alias to ~/.bash_aliases for $(alias_users_text)." stage_alias_helpers
-  run_stage 9  "Create $SERVICE_NAME so the server runs in the background (as $GS_USER) and restarts if it crashes." stage_service
-  run_stage 10 "Add edit-service and update-service (for $ADMIN_USER only), plus gameserver-start/stop/restart/status/logs$([[ $INSTALL_METHOD == steam ]] && echo "/steamupdate")." stage_service_aliases
+  run_stage 6  stage_steam_firstrun needs_steam      # only after a SteamCMD install (5.1)
+  run_stage 7  stage_alias_motd
+  run_stage 8  stage_alias_helpers
+  run_stage 9  stage_service
+  run_stage 10 stage_service_aliases
 
-  summary
+  summary "All done!"
 }
 
 [[ ${BASH_SOURCE[0]} == "$0" ]] && main "$@"
